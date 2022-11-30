@@ -15,11 +15,12 @@ import re
 from .exceptions import ScanImageVersionError, PathnameError
 from . import scans
 
-_scans = {'5.1': scans.Scan5Point1, '5.2': scans.Scan5Point2, '5.3': scans.Scan5Point3,
-          '5.4': scans.Scan5Point4, '5.5': scans.Scan5Point5, 
-          '5.6': scans.Scan5Point6, '5.7': scans.Scan5Point7, 
-          '2016b': scans.Scan2016b, 
-          '2017a': scans.Scan2017a, '2017b': scans.Scan2017b, 
+_scans = {'3.5':scans.Scan3Point5,
+          '5.1': scans.Scan5Point1, '5.2': scans.Scan5Point2, '5.3': scans.Scan5Point3,
+          '5.4': scans.Scan5Point4, '5.5': scans.Scan5Point5,
+          '5.6': scans.Scan5Point6, '5.7': scans.Scan5Point7,
+          '2016b': scans.Scan2016b,
+          '2017a': scans.Scan2017a, '2017b': scans.Scan2017b,
           '2018a': scans.Scan2018a, '2018b': scans.Scan2018b,
           '2019a': scans.Scan2019a, '2019b': scans.Scan2019b,
           '2020': scans.Scan2020,}
@@ -49,7 +50,7 @@ def read_scan(pathnames, dtype=np.int16, join_contiguous=False):
     version = get_scanimage_version(file_info)
 
     # Select the appropriate scan object
-    
+
     if (version in ['2016b', '2017a', '2017b', '2018a', '2018b', '2019a', '2019b', '2020'] and
             is_scan_multiROI(file_info)):
         scan = scans.ScanMultiROI(join_contiguous=join_contiguous)
@@ -104,8 +105,14 @@ def get_scanimage_version(info):
     """
     pattern = re.compile(r"SI.?\.VERSION_MAJOR = '?(?P<version>[^\s']*)'?")
     match = re.search(pattern, info)
+    old_si_pattern = re.compile(r"version='?(?P<version>[^\s']*)'?")
+    match_old = re.search(old_si_pattern,info)
+
     if match:
         version = match.group('version')
+    elif match_old:
+        match_release = re.search(r"release=(?P<release>[^\s]*)",info)
+        version = match_old.group('version') + '.' + match_release.group('release')
     else:
         raise ScanImageVersionError('Could not find ScanImage version in the tiff header')
 

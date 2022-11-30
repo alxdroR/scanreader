@@ -457,11 +457,71 @@ class BaseScan():
 
 
 class ScanLegacy(BaseScan):
-    """ Scan versions 4 and below. Not implemented."""
+    """Overwrite BaseScan attributes to be compatible with ScanImage 3.5. Other versions have not been tested"""
 
-    def __init__(self):
-        raise NotImplementedError('Legacy scans not supported')
+    @property
+    def version(self):
+        match = re.search(r"version='?(?P<version>[^\s']*)'?", self.header)
+        match_release = re.search(r"release=(?P<release>[^\s]*)",self.header)
+        version = (match.group('version') + '.' + match_release.group('release')) if match else None
+        return version
 
+    @property
+    def is_slow_stack(self):
+        """ is always true for legacy versions of ScanImage?"""
+        return True
+
+    @property
+    def num_channels(self):
+        match = re.search(r"state\.acq\.numberOfChannelsSave=(?P<channels>[^\s']*)", self.header)
+        if match:
+            num_channels = matlabstr2py(match.group('channels'))
+        else:
+            num_channels = None
+        return num_channels
+
+    @property
+    def requested_scanning_depths(self):
+        """ TO DO"""
+        return [0]
+
+    @property
+    def num_requested_frames(self):
+        match = re.search(r"state\.acq\.numberOfFrames=(?P<num_frames>[^\s']*)",
+                              self.header)
+        num_requested_frames = int(1e9 if match.group('num_frames')=='Inf' else
+                                   float(match.group('num_frames'))) if match else None
+        return num_requested_frames
+
+    @property
+    def num_frames(self):
+        """ Each tiff page is an image at a given channel, scanning depth combination."""
+        if self.is_slow_stack:
+            num_frames = self._num_pages / self.num_channels
+        else:
+            pass
+            #TODO
+            #num_frames = self._num_pages / (self.num_channels * self.num_scanning_depths)
+        num_frames = int(num_frames) # discard last frame if incomplete
+        return num_frames
+
+    @property
+    def is_bidirectional(self):
+        match = re.search(r"state\.acq\.bidirectionalScan=(?P<is_bidirectional>[^\s']*)", self.header)
+        is_bidirectional = (match.group('is_bidirectional') == '1') if match else False
+        return is_bidirectional
+
+    @property
+    def seconds_per_line(self):
+        match = re.search(r"state\.acq\.msPerLine=(?P<secs_per_line>[^\s']*)", self.header)
+        seconds_per_line = float(match.group('secs_per_line')) if match else None
+        return seconds_per_line
+
+    @property
+    def _num_averaged_frames(self):
+        """ Legacy versions averaged all images."""
+        num_averaged_frames = int(self.num_requested_frames)
+        return num_averaged_frames
 
 class BaseScan5(BaseScan):
     """ ScanImage 5 scans: one field per scanning depth and all fields have the same
@@ -572,6 +632,74 @@ class BaseScan5(BaseScan):
 
         return item
 
+
+class Scan3Point5(ScanLegacy):
+    """ ScanImage 3.5. Some of these attributes can likely go to a BaseScan3 or 4 super class later"""
+    @property
+    def num_fields(self):
+        return self.num_scanning_depths # one field per scanning depth
+
+    @property
+    def field_depths(self):
+        return self.scanning_depths
+
+    @property
+    def image_height(self):
+        return self._page_height
+
+    @property
+    def image_width(self):
+        return self._page_width
+
+    @property
+    def shape(self):
+        return (self.num_fields, self.image_height, self.image_width, self.num_channels,
+                self.num_frames)
+
+    def __getitem__(self, key):
+        """ In non-multiROI, all fields have the same x, y dimensions. """
+        # Fill key to size 5 (raises IndexError if more than 5)
+        full_key = utils.fill_key(key, num_dimensions=5)
+
+        # Check index types are valid
+        for i, index in enumerate(full_key):
+            utils.check_index_type(i, index)
+
+        # Check each dimension is in bounds
+        max_dimensions = self.shape
+        for i, (index, dim_size) in enumerate(zip(full_key, max_dimensions)):
+            utils.check_index_is_in_bounds(i, index, dim_size)
+
+        # Get fields, channels and frames as lists
+        field_list = utils.listify_index(full_key[0], self.num_fields)
+        y_list = utils.listify_index(full_key[1], self.image_height)
+        x_list = utils.listify_index(full_key[2], self.image_width)
+        channel_list = utils.listify_index(full_key[3], self.num_channels)
+        frame_list = utils.listify_index(full_key[4], self.num_frames)
+
+        # Edge case when slice index gives 0 elements or index is empty list, e.g., scan[10:0], scan[[]]
+        if [] in [field_list, y_list, x_list, channel_list, frame_list,]:
+            return np.empty(0)
+
+        # Read the required pages
+        pages = self._read_pages(field_list, channel_list, frame_list)
+
+        # Index in y, x using the original key (usually slices) for memory efficiency.
+        if isinstance(full_key[1], list) and isinstance(full_key[2], list):
+            # Our behaviour for lists is to take the submatrix defined by those indices.
+            ys = [[y] for y in y_list] # ys as nested lists does the trick
+            item = pages[:, ys, x_list, :, :]
+        else:
+            item = pages[:, full_key[1], full_key[2], :, :]
+            item = item.reshape(len(field_list), len(y_list), len(x_list), len(channel_list),
+                                len(frame_list)) # put back any dropped dimension
+
+        # If original index was an integer, delete that axis (as in numpy indexing)
+        squeeze_dims = [i for i, index in enumerate(full_key) if np.issubdtype(type(index),
+                                                                               np.signedinteger)]
+        item = np.squeeze(item, axis=tuple(squeeze_dims))
+
+        return item
 
 class Scan5Point1(BaseScan5):
     """ ScanImage 5.1. Basic."""
